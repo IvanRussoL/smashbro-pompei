@@ -398,7 +398,7 @@ Creo una nuova eccezione solo se va gestita in modo diverso da queste. Un login 
 ### Cartelle
 
 ```
-smashbro-pompei/
+smashbro_code/
 ├── app/
 │   ├── __init__.py        # create_app(): crea e configura l'applicazione
 │   ├── modelli/           # classi @dataclass
