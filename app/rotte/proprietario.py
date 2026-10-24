@@ -6,9 +6,13 @@ from flask import Blueprint, flash, g, redirect, render_template, request, sessi
 from app.db import ottieni_connessione
 from app.eccezioni import DatiNonValidiError
 from app.formato import prezzo_per_modulo
+from app.limiti import limita_tentativi
 from app.repository.utente import UtenteRepository
+from app.servizi.auth import AuthService
 from app.servizi.menu import DatiVoce, MenuService
 from app.servizi.orari import NOMI_GIORNI, OrariService
+from app.servizi.tentativi import AMBITO_CAMBIO_PASSWORD
+from app.sessione import apri_sessione, sessione_scaduta, sessione_valida
 
 bp = Blueprint("proprietario", __name__, url_prefix="/proprietario")
 
@@ -21,13 +25,18 @@ RIGHE_MINIME_PER_GIORNO = 2
 def richiedi_proprietario():
     """
     Eseguito prima di ogni rotta di questo Blueprint, comprese quelle aggiunte in futuro (nega per
-    default). L'utente si ricarica dal database a ogni richiesta: un account disattivato perde
-    subito l'accesso.
+    default). L'utente si ricarica dal database a ogni richiesta: un account disattivato, o una
+    password cambiata da un altro dispositivo o dallo sviluppatore, chiude subito la sessione.
+    Dopo un'ora di inattività o 8 ore dal login si rientra (app/sessione.py).
     """
     utente_id = session.get("utente_id")
     utente = UtenteRepository(ottieni_connessione()).leggi_per_id(utente_id) if utente_id else None
-    if utente is None or not utente.attivo:
+    if not sessione_valida(utente):
         session.clear()
+        return redirect(url_for("auth.login"))
+    if sessione_scaduta():
+        session.clear()
+        flash("Sessione scaduta: per sicurezza si esce dopo un'ora senza attività o 8 ore dall'accesso. Entra di nuovo.")
         return redirect(url_for("auth.login"))
     g.utente = utente
 
@@ -191,3 +200,28 @@ def orari():
             (turno.ora_inizio.strftime("%H:%M"), turno.ora_fine.strftime("%H:%M"))
         )
     return render_template("proprietario/orari.html", giorni=_righe_orari(esistenti))
+
+
+# --- Password ---
+
+@bp.route("/password", methods=["GET", "POST"])
+@limita_tentativi(AMBITO_CAMBIO_PASSWORD)
+def password():
+    """
+    Cambio della password del proprietario. Stesso limite del login sui tentativi sbagliati, così
+    con la sessione aperta non si può provare la password attuale all'infinito. Dopo il cambio
+    la sessione di chi l'ha cambiata viene rinnovata; quelle aperte su altri dispositivi si chiudono.
+    """
+    if request.method == "POST":
+        try:
+            AuthService(ottieni_connessione()).cambia_password(
+                g.utente.id, request.form.get("attuale", ""), request.form.get("nuova", ""),
+                request.form.get("conferma", ""),
+            )
+        except DatiNonValidiError as errore:
+            return render_template("proprietario/password.html", errori=errore.messaggi), 400
+        apri_sessione(UtenteRepository(ottieni_connessione()).leggi_per_id(g.utente.id))
+        flash("Password cambiata. Da ora entra con quella nuova.")
+        return redirect(url_for("proprietario.password"))
+    return render_template("proprietario/password.html")
+
